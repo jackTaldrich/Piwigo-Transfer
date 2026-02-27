@@ -7,6 +7,12 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, Page
 
 
+class Colors:
+    RED = '\033[91m'
+    YELLOW = '\033[33m'
+    RESET = '\033[0m'
+
+
 # API
 load_dotenv()
 API_KEY = os.getenv('API_KEY')
@@ -131,12 +137,12 @@ def main():
                 print(f'ID: {deposit_id}')
 
                 if deposit_id in completed_ids:
-                    print(f'Already completed\n')
+                    print(f'{Colors.YELLOW}Already completed{Colors.RESET}\n')
                     continue
 
                 if os.path.getsize(filepath) >= 19_500_000:
                     file_too_large = True
-                    print(f'ID {deposit_id} is too large to generate alt text. Shrink file and run again')
+                    print(f'{Colors.RED}ID {deposit_id} is too large to generate alt text. Shrink file and run again{Colors.RESET}')
                     failed.writerow([filepath, deposit_id, 'Generating alt text', 'File is too large to generate alt text. Shrink file and run again'])
                     continue
 
@@ -155,7 +161,7 @@ def main():
 
                     alt_text = alt_text_locator.input_value().strip()
                 except Exception as e:
-                    print(f'ID {deposit_id} failed to generate alt text')
+                    print(f'{Colors.RED}ID {deposit_id} failed to generate alt text{Colors.RESET}')
                     failed.writerow([filepath, deposit_id, 'Generating Alt Text', str(e)])
                     continue
 
@@ -179,7 +185,7 @@ def main():
                         title = title.removesuffix(' — Vector')
 
                     if title == 'Sorry, but we haven\'t found anything':
-                        print(f'Could not find photo ID {deposit_id} on Deposit Photos search')
+                        print(f'{Colors.RED}Could not find photo ID {deposit_id} on Deposit Photos search{Colors.RESET}')
                         failed.writerow([filepath, deposit_id, 'Gathering Title', 'Photo doesn\'t exist on deposit photos'])
                         continue
 
@@ -263,7 +269,7 @@ Attribution: {author}/DepositPhotos
                         print(f'Piwigo ID: {piwigo_id}')
                 except Exception as e:
                     failed.writerow([filepath, deposit_id, 'Piwigo addSimple', str(e)])
-                    print(f'File {filepath} failed uploading: {str(e)}')
+                    print(f'{Colors.RED}File {filepath} failed uploading:{Colors.RESET} {str(e)}')
                     continue
 
                 print(f'{photo_count / total_photos * 100:.1f}% complete, {photo_count}/{total_photos}')
