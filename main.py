@@ -1,9 +1,12 @@
+import base64
 import csv
+import io
 import os
 import requests
 
-from pathlib import Path
 from dotenv import load_dotenv
+from pathlib import Path
+from PIL import Image
 from playwright.sync_api import sync_playwright, Page
 
 
@@ -19,7 +22,12 @@ API_KEY = os.getenv('API_KEY')
 if not API_KEY:
     raise RuntimeError('API Key not found')
 
+ALT_API_KEY = os.getenv('ALT_TEXT_API')
+if not ALT_API_KEY:
+    raise RuntimeError('Alt API Key not found')
+
 HEADERS = {'X-PIWIGO-API': API_KEY}
+MAX_IMAGE_BYTES = 1_500_000
 
 
 def load_ids(datafile):
@@ -86,6 +94,66 @@ def ensure_header(path, header, delimiter='\t'):
             writer.writerow(header)
 
 
+def compress_image_to_limit(image_path: str, max_bytes: int = MAX_IMAGE_BYTES) -> bytes:
+    img = Image.open(image_path)
+
+    # Convert to RGB (JPEG safe)
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+
+    # Resize if huge
+    max_dimension = 1600
+    if max(img.size) > max_dimension:
+        img.thumbnail((max_dimension, max_dimension))
+
+    # Iteratively reduce quality
+    quality = 85
+    step = 5
+
+    while quality >= 30:
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=quality, optimize=True)
+        data = buffer.getvalue()
+
+        if len(data) <= max_bytes:
+            return data
+
+        quality -= step
+
+    raise ValueError("Unable to compress image below size limit.")
+
+
+def alttext_from_file(image_path: str, api_key: str, lang="en", max_chars=125) -> str:
+    compressed_bytes = compress_image_to_limit(image_path)
+
+    b64 = base64.b64encode(compressed_bytes).decode("ascii")
+
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    payload = {
+        "image": {
+            "raw": b64,
+            "lang": lang,
+            "max_chars": max_chars,
+        }
+    }
+
+    r = requests.post("https://alttext.ai/api/v1/images", headers=headers, json=payload, timeout=60)
+    r.raise_for_status()
+
+    data = r.json()
+    alt_text = data.get("alt_text")
+
+    if not alt_text:
+        raise RuntimeError(f"No alt_text in response. Response: {data}")
+
+    return alt_text
+
+
 # TSV FILES
 COMPLETED = 'completed.tsv'
 FAILED = 'failed.tsv'
@@ -100,8 +168,6 @@ directory_raw = input('Directory: ').strip()
 directory = Path(directory_raw).expanduser().resolve()
 
 def main():
-    file_too_large = False
-
     total_photos = sum(1 for _ in directory.iterdir())
 
     if total_photos == 0:
@@ -140,30 +206,8 @@ def main():
                     print(f'{Colors.YELLOW}Already completed{Colors.RESET}\n')
                     continue
 
-                if os.path.getsize(filepath) >= 19_500_000:
-                    file_too_large = True
-                    print(f'{Colors.RED}ID {deposit_id} is too large to generate alt text. Shrink file and run again{Colors.RESET}')
-                    failed.writerow([filepath, deposit_id, 'Generating alt text', 'File is too large to generate alt text. Shrink file and run again'])
-                    continue
-
                 # generate alt text for image
-                try:
-                    page.goto(
-                        'https://www.tailwindapp.com/marketing/tools/image-alt-text-generator',
-                        wait_until='domcontentloaded',
-                    )
-
-                    page.wait_for_selector('input[type="file"]', timeout=10_000)
-                    page.locator('input[type="file"]').set_input_files(str(filepath))
-
-                    alt_text_locator = page.locator('textarea')
-                    alt_text_locator.wait_for(timeout=10_000)
-
-                    alt_text = alt_text_locator.input_value().strip()
-                except Exception as e:
-                    print(f'{Colors.RED}ID {deposit_id} failed to generate alt text{Colors.RESET}')
-                    failed.writerow([filepath, deposit_id, 'Generating Alt Text', str(e)])
-                    continue
+                alt_text = alttext_from_file(str(filepath), ALT_API_KEY)
 
                 # pull info from deposit photos
                 page.goto(search_url)
@@ -279,10 +323,6 @@ Attribution: {author}/DepositPhotos
                 # success
                 completed_ids.add(deposit_id)
                 completed.writerow([filepath, deposit_id, deposit_url, title, author, alt_text, keywords_cell, piwigo_id])
-
-            if file_too_large:
-                print('One or more files was too large. Check the failed.tsv file to see which ones.')
-                print('https://compressjpeg.com/')
 
             browser.close()
 
